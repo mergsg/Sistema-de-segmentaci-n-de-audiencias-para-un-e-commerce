@@ -2,7 +2,8 @@
 Generación de segmentos estratégicos para el equipo de CRM & Email Marketing, listos para activación en Salesforce Marketing Cloud.
 El dataset sintético utilizado proviene de la tabla transaccional AuroraRetail en BigQuery
 
-*Objetivo del proyecto*
+**Objetivo del proyecto**
+
 Diseñar y documentar una serie de audiencias de clientes, cada una con criterios de negocio definidos por el equipo de Marketing.
 El proyecto debe:
 - Traducir requisitos comerciales en reglas SQL claras
@@ -10,7 +11,8 @@ El proyecto debe:
 - Entregar resultados reproducibles mes a mes
 - Generar un solo archivo _.sql_ con todos los segmentos
 
-*Segmentos construidos*
+**Segmentos construidos**
+
 A partir de la conversación con el equipo de Marketing y los requisitos proporcionados, se implementaron los siguientes segmentos:
 
 1. Dormant Clients
@@ -37,7 +39,8 @@ Clientes que realizaron exactamente una compra en el último año.
 5. Cross-Border Clients
 Clientes con al menos dos órdenes enviadas fuera de Reino Unido en el último año.
 
-*Principales consultas SQL*
+**Principales consultas SQL**
+
 El archivo _audiences.sql_ utiliza:
 - CTEs (WITH) para estructurar cada paso
 - Filtros temporales precisos
@@ -47,7 +50,8 @@ El archivo _audiences.sql_ utiliza:
 - Ordenación por fecha de última compra
 La lógica está claramente segmentada con comentarios para cada audiencia.
 
-*Tecnologías utilizadas*
+**Tecnologías utilizadas**
+
 - *Google BigQuery SQL*
 - Ventanas temporales definidas por negocio
 - Transformación de datos exclusivamente en SQL
