@@ -1,0 +1,262 @@
+
+----------------------------------------------------------
+-- Audiencia: Dormant Clients 
+----------------------------------------------------------
+
+--1. Clientes con al menos una compra real en ventana activa entre 01/12/2023 y 30/11/2024.
+WITH active_clients AS (
+  SELECT CustomerID AS SubscriberKey,
+         MAX(InvoiceDate) AS Fecha_Ultima_Compra
+  FROM `mda-madrid-439606.business_case.AuroraRetail`
+  WHERE InvoiceDate BETWEEN '2023-12-01' AND '2024-11-30'
+    AND Quantity > 0
+    AND CustomerID IS NOT NULL
+  GROUP BY CustomerID
+),
+
+--2. Excluir a clientes con compras reales en ventana de inactividad entre 01/12/2024 y 31/05/2025.
+inactive_clients AS (
+  SELECT DISTINCT CustomerID
+  FROM `mda-madrid-439606.business_case.AuroraRetail`
+  WHERE InvoiceDate BETWEEN '2024-12-01' AND '2025-05-31'
+    AND Quantity > 0
+    AND CustomerID IS NOT NULL
+),
+
+--3. Excluir a clientes nuevos cuya primera compra fue en los últimos 6 meses.
+first_purchase_last6months AS (
+  SELECT CustomerID
+  FROM `mda-madrid-439606.business_case.AuroraRetail`
+  GROUP BY CustomerID
+  HAVING MIN(InvoiceDate) >= '2024-11-30'
+),
+
+--4. Tomar un producto de referencia por cliente (el primero alfabéticamente en este caso).
+last_purchase_product AS (
+  SELECT ar.CustomerID AS SubscriberKey,
+         MIN(ar.Description) AS Nombre, -- Producto con nombre menor alfabéticamente como referencia
+         MAX(ar.Country) AS Pais, -- si un cliente compró varios productos en distintos países el mismo día, toma uno cualquiera como referencia (aunque sea poco probable)
+         ac.Fecha_Ultima_Compra
+  FROM `mda-madrid-439606.business_case.AuroraRetail` ar
+  JOIN active_clients ac
+    ON ar.CustomerID = ac.SubscriberKey
+    AND ar.InvoiceDate = ac.Fecha_Ultima_Compra
+  WHERE ar.Quantity > 0
+    AND ar.CustomerID IS NOT NULL
+  GROUP BY ar.CustomerID, ac.Fecha_Ultima_Compra
+)
+
+--5. Para seleccionar el resultado final, excluyendo clientes activos recientes y nuevos clientes.
+SELECT lpp.SubscriberKey,
+       lpp.Nombre,
+       lpp.Pais,
+       lpp.Fecha_Ultima_Compra
+FROM last_purchase_product lpp
+
+LEFT JOIN inactive_clients ic
+  ON lpp.SubscriberKey = ic.CustomerID
+
+LEFT JOIN first_purchase_last6months fp
+  ON lpp.SubscriberKey = fp.CustomerID
+
+WHERE ic.CustomerID IS NULL
+  AND fp.CustomerID IS NULL
+  AND lpp.SubscriberKey IS NOT NULL
+ORDER BY lpp.Fecha_Ultima_Compra DESC -- Prioriza los más recientes
+;
+
+-- Resultado 2214 clientes
+
+
+
+
+----------------------------------------------------------
+-- Audiencia: Holiday High Spenders 
+----------------------------------------------------------
+
+--1. Hay que calcular el gasto neto acumulado de cada cliente en ventana promocional (nov-dic 2024).
+WITH spend_summary AS (
+  SELECT CustomerID AS SubscriberKey,
+         SUM(Quantity * UnitPrice) AS Total_Gasto,
+         MAX(InvoiceDate) AS Fecha_Ultima_Compra
+  FROM `mda-madrid-439606.business_case.AuroraRetail`
+  WHERE InvoiceDate BETWEEN '2024-11-01' AND '2024-12-31'
+    AND Quantity > 0
+    AND CustomerID IS NOT NULL
+  GROUP BY CustomerID
+  HAVING Total_Gasto >= 500 -- Condición mínima para High Spenders
+),
+
+-- 2. Y seleccionar un producto de referencia por cliente (en este caso, el primero alfabéticamente).
+product_reference AS (
+  SELECT ss.SubscriberKey,
+         MIN(ar.Description) AS Nombre,
+         MAX(ar.Country) AS Pais,
+         ss.Total_Gasto,
+         ss.Fecha_Ultima_Compra
+  FROM spend_summary ss
+  JOIN `mda-madrid-439606.business_case.AuroraRetail` ar
+    ON ss.SubscriberKey = ar.CustomerID
+    AND ss.Fecha_Ultima_Compra = ar.InvoiceDate
+  WHERE ar.Quantity > 0
+  GROUP BY ss.SubscriberKey, ss.Total_Gasto, ss.Fecha_Ultima_Compra
+)
+
+-- 3. Para obtener el resultado final con un registro único por cliente.
+SELECT SubscriberKey,
+       Nombre,
+       Pais,
+       Total_Gasto,
+       Fecha_Ultima_Compra
+FROM product_reference
+ORDER BY Fecha_Ultima_Compra DESC
+;
+
+-- Resultado: 965 clientes
+
+
+
+
+----------------------------------------------------------
+-- Audiencia: Bulk Buyers
+----------------------------------------------------------
+
+-- 1. Hay que filtrar órdenes con 10 o más productos distintos o 100 o más unidades compradas en últimos 12 meses.
+WITH bulk_orders AS (
+  SELECT CustomerID AS SubscriberKey,
+         InvoiceNo,
+         COUNT(DISTINCT StockCode) AS Productos_Distintos,
+         SUM(Quantity) AS Total_Unidades,
+         MAX(InvoiceDate) AS Fecha_Compra
+  FROM `mda-madrid-439606.business_case.AuroraRetail`
+  WHERE InvoiceDate BETWEEN '2024-06-01' AND '2025-05-31'
+    AND Quantity > 0
+    AND CustomerID IS NOT NULL
+  GROUP BY CustomerID, InvoiceNo
+  HAVING Productos_Distintos >= 10 OR Total_Unidades >= 100
+),
+
+-- 2. Selecciono un producto de referencia por cliente (en este caso también el primero alfabéticamente).
+product_reference AS (
+  SELECT bo.SubscriberKey,
+         MIN(ar.Description) AS Nombre,
+         MAX(ar.Country) AS Pais,
+         MAX(bo.Fecha_Compra) AS Fecha_Compra
+  FROM bulk_orders bo
+  JOIN `mda-madrid-439606.business_case.AuroraRetail` ar
+    ON bo.InvoiceNo = ar.InvoiceNo
+    AND bo.SubscriberKey = ar.CustomerID
+  WHERE ar.Quantity > 0
+  GROUP BY bo.SubscriberKey
+)
+
+-- 3. Obtenermos el resultado final con un registro único por cliente.
+SELECT SubscriberKey,
+       Nombre,
+       Pais,
+       Fecha_Compra
+FROM product_reference
+ORDER BY Fecha_Compra DESC
+;
+
+-- Resultado: 3893 clientes
+
+
+
+
+----------------------------------------------------------
+-- Audiencia: One-Time Buyers
+----------------------------------------------------------
+
+-- 1. Hay que contar el número de pedidos por cliente en últimos 12 meses.
+WITH customer_orders AS (
+  SELECT CustomerID AS SubscriberKey,
+         COUNT(DISTINCT InvoiceNo) AS Num_Orders,
+         MAX(InvoiceDate) AS Fecha_Ultima_Compra
+  FROM `mda-madrid-439606.business_case.AuroraRetail`
+  WHERE InvoiceDate BETWEEN '2024-06-01' AND '2025-05-31'
+    AND Quantity > 0
+    AND CustomerID IS NOT NULL
+  GROUP BY CustomerID
+  HAVING Num_Orders = 1 -- Solo clientes con exactamente una compra
+),
+
+-- 2. Después hay que seleccionar un producto de referencia por cliente (primero alfabéticamente en este caso también).
+product_reference AS (
+  SELECT co.SubscriberKey,
+         MIN(ar.Description) AS Nombre,
+         MAX(ar.Country) AS Pais,
+         co.Fecha_Ultima_Compra
+  FROM customer_orders co
+  JOIN `mda-madrid-439606.business_case.AuroraRetail` ar
+    ON co.SubscriberKey = ar.CustomerID
+    AND co.Fecha_Ultima_Compra = ar.InvoiceDate
+  WHERE ar.Quantity > 0
+  GROUP BY co.SubscriberKey, co.Fecha_Ultima_Compra
+)
+
+-- 3. Obtenemos el resultado final con un registro único por cliente.
+SELECT SubscriberKey,
+       Nombre,
+       Pais,
+       Fecha_Ultima_Compra
+FROM product_reference
+ORDER BY Fecha_Ultima_Compra DESC
+;
+
+-- Resultado 1548 clientes
+
+
+
+
+----------------------------------------------------------
+-- Audiencia: Cross-Border Clients
+----------------------------------------------------------
+
+-- 1. Hay que seleccionar órdenes fuera de UK en los últimos 12 meses.
+WITH international_orders AS (
+  SELECT CustomerID AS SubscriberKey,
+         InvoiceNo,
+         MAX(InvoiceDate) AS Fecha_Compra,
+         Country
+  FROM `mda-madrid-439606.business_case.AuroraRetail`
+  WHERE InvoiceDate BETWEEN '2024-06-01' AND '2025-05-31'
+    AND Country <> 'United Kingdom'
+    AND Quantity > 0
+    AND CustomerID IS NOT NULL
+  GROUP BY CustomerID, InvoiceNo, Country
+),
+
+-- 2. Se filtran los clientes con al menos 2 órdenes internacionales.
+clients_with_2plus_orders AS (
+  SELECT SubscriberKey,
+         MAX(Fecha_Compra) AS Fecha_Ultima_Compra
+  FROM international_orders
+  GROUP BY SubscriberKey
+  HAVING COUNT(DISTINCT InvoiceNo) >= 2
+),
+
+-- 3. Hay que seleccionar un producto de referencia por cliente (en este caso, de nuevo, el primero alfabéticamente).
+product_reference AS (
+  SELECT c2.SubscriberKey,
+         MIN(ar.Description) AS Nombre,
+         MAX(ar.Country) AS Pais,
+         c2.Fecha_Ultima_Compra
+  FROM clients_with_2plus_orders c2
+  JOIN `mda-madrid-439606.business_case.AuroraRetail` ar
+    ON c2.SubscriberKey = ar.CustomerID
+    AND c2.Fecha_Ultima_Compra = ar.InvoiceDate
+  WHERE ar.Quantity > 0
+  GROUP BY c2.SubscriberKey, c2.Fecha_Ultima_Compra
+)
+
+-- 4. Obtenemos el resultado final con un registro único por cliente.
+SELECT SubscriberKey,
+       Nombre,
+       Pais,
+       Fecha_Ultima_Compra
+FROM product_reference
+ORDER BY Fecha_Ultima_Compra DESC
+;
+
+-- Resultado: 239 clientes
